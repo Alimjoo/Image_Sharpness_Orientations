@@ -45,8 +45,8 @@ public:
     int RegisterBase(const CHImage& src, Image_Sharpness_Orientations_Register_Result& result,
         Image_Sharpness_Orientations_Params params = Image_Sharpness_Orientations_Params());
 
-    /// @brief 提取当前图形并与已注册基准进行一对一匹配，输出相同编号及相对角度
-    /// @param src 待检测图，与基准应为相同图案且朝向接近；允许平移和适度缩放
+    /// @brief 以全局位置和相对顺序为主、形状为辅进行一对一匹配，输出编号及原图测量值
+    /// @param src 待检测图，应为相同布局；允许不同分辨率、非等比缩放、剪切及适度透视/局部变形
     /// @param result 输出轮廓、编号、角度、面积、平均亮度、Tenengrad清晰度、对比度以及缺失编号
     /// @return from Image_Sharpness_Orientations_Error_Codes；ISO_OK不代表全部匹配
     int Detect(const CHImage& src, Image_Sharpness_Orientations_Detect_Result& result) const;

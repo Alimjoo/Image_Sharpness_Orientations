@@ -106,6 +106,11 @@ void test_registration_and_motion() {
     require(detector.Detect(changed_outline, current) == ISO_OK && current.all_matched &&
         current.angle_valid && std::abs(current.angle) < 0.1,
         "changed product silhouette does not dictate printed-part rotation");
+    for (size_t i = 0; i < base.shapes.size(); ++i) {
+        require(current.shapes[i].id == base.shapes[i].id &&
+            cv::norm(current.shapes[i].center - base.shapes[i].center) < 1.0,
+            "changed product silhouette does not swap neighboring part IDs");
+    }
 
     CHImage blurred;
     cv::GaussianBlur(image, blurred, {0, 0}, 4.0);
@@ -129,6 +134,88 @@ void test_registration_and_motion() {
     base.shapes.clear();
     require(detector.Detect(image, current) == ISO_OK && current.shapes.size() == 8,
         "caller result does not own internal base state");
+}
+
+void check_warped_ids(const RegisterResult& base, const DetectResult& current,
+    const cv::Matx33d& transform, const std::vector<int>& missing = {}) {
+    require(current.matched_count == static_cast<int>(base.shapes.size() - missing.size()),
+        "distorted layout retains all surviving IDs");
+    require(current.missing_ids == missing, "distorted layout reports the correct missing IDs");
+    for (const auto& shape : base.shapes) {
+        if (std::find(missing.begin(), missing.end(), shape.id) != missing.end()) continue;
+        CHContour warped;
+        cv::perspectiveTransform(shape.contour, warped, transform);
+        const auto m = cv::moments(warped);
+        const cv::Point2d expected(m.m10 / m.m00, m.m01 / m.m00);
+        const auto found = std::find_if(current.shapes.begin(), current.shapes.end(),
+            [&](const auto& part) { return part.matched && part.id == shape.id; });
+        require(found != current.shapes.end() && cv::norm(cv::Point2d(found->center) - expected) < 2.0,
+            "ID follows its actual contour under distortion, not a neighboring part");
+        require(std::abs(found->area / m.m00 - 1.0) < 0.08,
+            "reported area remains in the distorted image coordinates");
+    }
+}
+
+void test_distorted_layout() {
+    const auto image = make_product();
+    Detector detector;
+    RegisterResult base;
+    DetectResult current;
+    require(detector.RegisterBase(image, base) == ISO_OK, "register layout before distortion");
+    const std::vector<cv::Matx33d> transforms = {
+        // Different image aspect ratio, nonuniform scaling, and shear.
+        {0.65, 0.18, 40, -0.08, 1.05, 70, 0, 0, 1},
+        // A vertical layout must retain IDs even though left/right sorting changes.
+        {0, -0.85, 620, 0.75, 0, 40, 0, 0, 1},
+        // Perspective changes both relative positions and the shapes themselves.
+        {0.85, 0.12, 30, -0.04, 1.05, 40, 0.00035, -0.00015, 1}
+    };
+    for (const auto& transform : transforms) {
+        CHImage warped;
+        cv::warpPerspective(image, warped, transform, {800, 800});
+        require(detector.Detect(warped, current) == ISO_OK && current.all_matched,
+            "all eight parts match across resolution and geometric distortion");
+        check_warped_ids(base, current, transform);
+    }
+
+    // Removing a middle arc must not shift the IDs of the remaining repeated arcs.
+    CHImage changed = image.clone();
+    const auto& removed = base.shapes[1];
+    std::vector<cv::Point> contour;
+    for (const auto& point : removed.contour) contour.emplace_back(point);
+    cv::Mat mask = cv::Mat::zeros(image.size(), CV_8UC1);
+    cv::fillPoly(mask, std::vector<std::vector<cv::Point>>{contour}, cv::Scalar(255));
+    cv::dilate(mask, mask, cv::getStructuringElement(cv::MORPH_ELLIPSE, {7, 7}));
+    changed.setTo(cv::Scalar(185), mask);
+    cv::circle(changed, {500, 565}, 12, cv::Scalar(10), cv::FILLED);
+    CHImage warped;
+    cv::warpPerspective(changed, warped, transforms.front(), {800, 800});
+    require(detector.Detect(warped, current) == ISO_OK && !current.all_matched,
+        "distorted missing/extra parts are not forced into a full match");
+    check_warped_ids(base, current, transforms.front(), {removed.id});
+    require(current.shapes.size() == 8 && current.shapes.back().id == -1,
+        "extra part stays unmatched instead of consuming a missing ID");
+
+    // Identity follows location even when two parts exchange their appearance.
+    CHImage layout(500, 700, CV_8UC1, cv::Scalar(180));
+    cv::rectangle(layout, {100, 130, 110, 20}, cv::Scalar(10), cv::FILLED);
+    cv::circle(layout, {350, 140}, 35, cv::Scalar(10), cv::FILLED);
+    cv::ellipse(layout, {550, 350}, {18, 55}, 0, 0, 360, cv::Scalar(10), cv::FILLED);
+    require(detector.RegisterBase(layout, base) == ISO_OK && base.shapes.size() == 3,
+        "register parts for appearance change");
+    CHImage deformed(500, 700, CV_8UC1, cv::Scalar(180));
+    cv::circle(deformed, {155, 140}, 35, cv::Scalar(10), cv::FILLED);
+    cv::rectangle(deformed, {295, 130, 110, 20}, cv::Scalar(10), cv::FILLED);
+    cv::ellipse(deformed, {550, 350}, {35, 75}, 0, 0, 360, cv::Scalar(10), cv::FILLED);
+    require(detector.Detect(deformed, current) == ISO_OK && current.all_matched,
+        "shape and area changes alone do not reject a spatial correspondence");
+    for (size_t i = 0; i < base.shapes.size(); ++i) {
+        require(current.shapes[i].id == base.shapes[i].id &&
+            cv::norm(current.shapes[i].center - base.shapes[i].center) < 1.0,
+            "layout takes priority over exchanged shape appearances");
+    }
+    require(current.shapes.back().area > 2.0 * base.shapes.back().area,
+        "large measured deformation survives matching");
 }
 
 void test_dark_and_light_parts() {
@@ -365,7 +452,7 @@ void save_overlay_impl(const std::filesystem::path& path, const CHImage& image,
         const cv::Scalar ink = registration || shape.matched ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
         cv::polylines(color, std::vector<std::vector<cv::Point>>{contour}, true, ink, 2, cv::LINE_AA);
         const cv::Point center(cvRound(shape.center.x * scale), cvRound(shape.center.y * scale));
-        const std::string label = shape.id < 0 ? "new" : std::to_string(shape.id);
+        const std::string label = shape.id < 0 ? "unmatched" : std::to_string(shape.id);
         cv::putText(color, label, center, cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 0), 4, cv::LINE_AA);
         cv::putText(color, label, center, cv::FONT_HERSHEY_SIMPLEX, 0.8, ink, 2, cv::LINE_AA);
     }
@@ -442,10 +529,11 @@ int dev() {
     try {
         require(test_IMAGE_SHARPNESS_ORIENTATIONS_API() == ISO_OK, "DLL linkage");
         test_registration_and_motion();
+        test_distorted_layout();
         test_dark_and_light_parts();
         test_quality_measurements();
         test_errors_and_formats();
-        std::cout << "All registration, matching, angle, area, brightness, Tenengrad, contrast, and error checks passed.\n";
+        std::cout << "All registration, layout/distortion matching, angle, area, brightness, Tenengrad, contrast, and error checks passed.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';

@@ -66,11 +66,11 @@ Only three settings are public:
 | `min_area` | `100.0` | Minimum outer-contour area in pixels squared; must be finite and positive. |
 
 These settings are saved by `RegisterBase()` and reused by `Detect()`. Register
-again to change them. The other settings retain their previous values as private
-implementation constants: 3x3 Gaussian smoothing, maximum area ratio 0.25,
-2-pixel contour band, match distance 0.12, area factor 2.0, shape distance 1.0,
-and orientation anisotropy 0.08. Local background sampling uses a fixed
-5-pixel dilation radius.
+again to change them. Private segmentation/measurement constants include 3x3
+Gaussian smoothing, maximum area ratio 0.25, a 2-pixel contour band, orientation
+anisotropy 0.08, and a 5-pixel local-background dilation radius. Matching allows
+a center residual up to 0.12 in the normalized product frame. Area and shape
+differences contribute bounded costs; they no longer impose rejection thresholds.
 
 The simplified parameter struct replaces the previous tuning fields. Quality
 results now use float `mean_brightness`, `sharpness`, and `contrast` fields.
@@ -87,20 +87,32 @@ with the updated public headers and library.
    ignoring inner holes, small regions, and regions touching the image border.
    Each selected connected region is one part.
 3. Number base parts from 1 in increasing center-x order (then center-y for ties).
-4. Match nearby centers after correcting product position and scale, with area,
-   contour compactness, and moment anisotropy checks. Greedy matching uses each
-   base part and detected part at most once. A second pass refines rotation from
-   the initially matched centers.
-5. Return matching parts in base-ID order, followed by extra parts with ID -1.
+4. Normalize positions using the product silhouette's center and covariance.
+   This accounts for resolution, nonuniform scale, and shear without modifying
+   the measured contours. Search the remaining rotation within +/-90 degrees
+   using the complete mark layout.
+5. Match all parts jointly with a minimum-cost one-to-one assignment. Position
+   and soft left/right and above/below order dominate the cost; area, contour
+   compactness, and moment anisotropy are secondary factors. Almost equal
+   coordinates are treated as order ties. Missing/extra parts can remain
+   unmatched, even when the two images contain the same number of parts.
+6. Return matching parts in base-ID order, followed by unmatched parts with ID -1.
    Missing base IDs are listed separately. `ISO_NoShapes` lists all base IDs as
    missing when a valid detection image contains no accepted contours.
 
 `all_matched` requires every base part and every current part to participate.
-`match_cost` is a comparison cost, not a probability or a calibrated confidence.
+`match_cost` is an assignment cost, not a probability, calibrated confidence,
+or amount of deformation. An unmatched contour does not necessarily represent
+a newly added part; the overlay labels it `unmatched`.
 
-This initial implementation assumes a single product with separated marks of
-the opposite polarity and approximately similar orientation. It does not split touching marks,
-recover clipped parts, correct perspective, or search arbitrary 180-degree poses.
+The matcher assumes the same product layout with separated marks of the opposite
+polarity and a usable product silhouette. It tolerates moderate perspective and
+local deformation when centers retain their relative layout after normalization;
+it does not estimate a full projective or nonrigid warp. It does not split touching
+marks, recover clipped parts, or resolve arbitrary 180-degree/symmetric poses.
+Large position changes or severe silhouette changes can still leave parts
+unmatched. Appearance changes alone are deliberately weak evidence against a
+match, so this is not a classifier for rejecting different product designs.
 Faint/broken strokes can change the connected-part count; tune `threshold`,
 `min_area`, and `detect_dark_area` for the product.
 
@@ -120,6 +132,14 @@ Faint/broken strokes can change the connected-part count; tune `threshold`,
 Always inspect `orientation_valid` and `angle_valid`. Nearly circular shapes
 have unreliable principal axes. Perspective can change per-part principal-axis
 angles differently from the whole-pattern rotation.
+
+Matching normalization is internal: returned centers, contours, areas, and
+orientations still describe the original input image. This preserves the
+differences needed for subsequent deformation analysis. Across different
+resolutions or camera poses, account for image scale/registration before
+interpreting raw pixel or area differences as physical deformation. The overall
+`angle` remains a least-squares rotation of matched centers in original image
+coordinates; it does not describe the complete distortion.
 
 All three quality measurements use the original grayscale pixels, not the
 smoothed segmentation image. Foreground brightness uses only the current
@@ -170,7 +190,11 @@ reusing an existing directory. For a single-configuration generator, specify
 `-DCMAKE_BUILD_TYPE=Release`. Set `-DBUILD_TESTING=OFF` for only the library.
 
 The tests cover eight-part extraction, stable IDs under translation/rotation/
-scale, known angles and areas, reduced sharpness after blur, missing/extra parts,
+scale, nonuniform resizing, shear, a vertical layout, moderate perspective,
+and missing middle arcs. They check each ID against its transformed contour,
+preserve raw deformed areas, and verify that changed/swapped appearances do not
+override spatial identity. Other checks cover known angles and areas, reduced
+sharpness after blur, missing/extra parts,
 known foreground brightness and local contrast, exclusion of holes and nearby
 parts, quadratic Tenengrad response to edge contrast, dark/light selection with
 automatic and fixed thresholds, input formats,
@@ -186,19 +210,23 @@ build/Release/Image_Sharpness_Orientations_test.exe --images BASE_IMAGE OUTPUT_D
 The runner uses the default dark-area settings. It writes `base.png`, a numbered contour overlay for each current image,
 `summary.csv`, and `measurements.csv`. Both CSV files include a `stage` column
 (`register` or `detect`); detection-only matching fields are blank for registration.
+Unmatched contours are red and labeled `unmatched`.
 It supports Windows Unicode input paths.
 Exit status is 0 only when every current image has a complete match; 1 also
 indicates a successfully processed series containing missing/extra parts, so
 inspect the CSV status column to distinguish processing errors.
 
-The supplied same-product folder is tested under `test_output/same/`: one base
-plus 18 detections, with all eight IDs matched in every detection.
-The refreshed `measurements.csv` includes per-part `mean_brightness`,
-Tenengrad `sharpness`, and `contrast`.
+The layout matcher was checked on the supplied 5472 x 3648 base images against
+`fsafds.bmp` (1501 x 1501). Both pairs now retain all eight correct IDs, including
+the repeated arcs. Results are under `test_output/layout/` (base ending
+`65418453`) and `test_output/layout_original_base/` (base ending `64834661`).
+`test_output/layout_series/` contains the latter base plus the other 18
+same-product images, with all eight IDs matched in every detection. The CSVs
+include per-part `mean_brightness`, Tenengrad `sharpness`, and `contrast`.
 
 Earlier validation on the mixed 27-image series is saved under `test_output/`.
-These older snapshots predate the new quality columns and Tenengrad score;
-use `same/` for the current measurements:
+These older snapshots predate the new matcher, quality columns, and Tenengrad
+score; use the `layout*` folders for the current measurements:
 
 - `footprint/`: one base plus 18 current images; all eight base IDs matched in
   every current image.

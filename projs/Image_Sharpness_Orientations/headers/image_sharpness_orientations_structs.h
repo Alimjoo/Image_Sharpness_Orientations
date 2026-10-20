@@ -28,10 +28,10 @@ struct Image_Sharpness_Orientations_Params {
 };
 
 struct Image_Sharpness_Orientations_Shape {
-    int id = -1;                         // 基准编号从1开始；未匹配的新图形为-1
+    int id = -1;                         // 基准编号从1开始；未匹配图形为-1，不代表一定是新增图形
     bool matched = false;                // 仅检测结果使用：是否匹配到了基准
     CHContour contour;                   // 外轮廓，原图像素坐标，不包含内孔轮廓
-    CHPointF center;                      // 外轮廓围成区域的重心
+    CHPointF center;                      // 原图中外轮廓围成区域的重心；匹配归一化不改变测量坐标
     CHRect bounds;                       // 正外接矩形
     double area = 0.0;                   // 外轮廓包围面积，像素平方，包含内孔
     double orientation = 0.0;            // 图形主轴绝对角度，[0,180)，图像坐标系顺时针为正
@@ -44,7 +44,7 @@ struct Image_Sharpness_Orientations_Shape {
     float sharpness = 0.0f;
     // 前景与局部背景平均亮度差的绝对值，范围0~255；没有可用局部背景时为0
     float contrast = 0.0f;
-    double match_cost = -1.0;            // 仅检测结果使用：匹配代价，越小越好；未匹配为-1
+    double match_cost = -1.0;            // 仅检测结果使用：位置/顺序为主、形状为辅的匹配代价，非变形量；未匹配为-1
 };
 
 using Image_Sharpness_Orientations_Shapes = std::vector<Image_Sharpness_Orientations_Shape>;
