@@ -10,6 +10,19 @@ namespace {
 constexpr int kContourBand = 2;
 constexpr int kBackgroundRadius = 5;
 
+float measure_contour_sharpness(const cv::Mat& gray_roi, const std::vector<cv::Point>& contour,
+    const cv::Point& offset) {
+    // Shared unscaled 3x3 Sobel/Tenengrad formula for marks and the projection edge.
+    cv::Mat dx, dy;
+    cv::Sobel(gray_roi, dx, CV_32F, 1, 0, 3);
+    cv::Sobel(gray_roi, dy, CV_32F, 0, 1, 3);
+    const cv::Mat energy = dx.mul(dx) + dy.mul(dy);
+    cv::Mat band_mask = cv::Mat::zeros(gray_roi.size(), CV_8UC1);
+    cv::drawContours(band_mask, std::vector<std::vector<cv::Point>>{contour}, 0, cv::Scalar(255),
+        2 * kContourBand + 1, cv::LINE_8, cv::noArray(), 0, offset);
+    return static_cast<float>(cv::mean(energy, band_mask)[0]);
+}
+
 } // namespace
 
 // Segmentation identifies the pixels, but all measurements use the original gray image.
@@ -51,15 +64,38 @@ void measure_quality(const cv::Mat& gray, const cv::Mat& foreground,
         shape.contrast = static_cast<float>(std::abs(foreground_mean - background_mean));
     }
 
-    // Same unscaled 3x3 Sobel/Tenengrad energy formula as Alg_CH, sampled on our contour band.
-    cv::Mat dx, dy;
-    cv::Sobel(gray_roi, dx, CV_32F, 1, 0, 3);
-    cv::Sobel(gray_roi, dy, CV_32F, 0, 1, 3);
-    const cv::Mat energy = dx.mul(dx) + dy.mul(dy);
-    cv::Mat band_mask = cv::Mat::zeros(roi.size(), CV_8UC1);
-    cv::drawContours(band_mask, std::vector<std::vector<cv::Point>>{contour}, 0, cv::Scalar(255),
-        2 * kContourBand + 1, cv::LINE_8, cv::noArray(), 0, -roi.tl());
-    shape.sharpness = static_cast<float>(cv::mean(energy, band_mask)[0]);
+    shape.sharpness = measure_contour_sharpness(gray_roi, contour, -roi.tl());
+}
+
+void measure_outer_quality(const cv::Mat& gray, const std::vector<cv::Point>& contour,
+    Image_Sharpness_Orientations_Outer_Edge_Result& result) {
+    const int margin = std::max(kContourBand, kBackgroundRadius) + 3;
+    const auto& bounds = result.bounds;
+    const int left = std::max(0, bounds.x - margin);
+    const int top = std::max(0, bounds.y - margin);
+    const int right = std::min(gray.cols, bounds.x + bounds.width + margin);
+    const int bottom = std::min(gray.rows, bounds.y + bounds.height + margin);
+    const cv::Rect roi(left, top, right - left, bottom - top);
+    const cv::Mat gray_roi = gray(roi);
+    const std::vector<std::vector<cv::Point>> contours{contour};
+    cv::Mat interior = cv::Mat::zeros(roi.size(), CV_8UC1);
+    cv::drawContours(interior, contours, 0, cv::Scalar(255), cv::FILLED,
+        cv::LINE_8, cv::noArray(), 0, -roi.tl());
+    result.mean_brightness = static_cast<float>(cv::mean(gray_roi, interior)[0]);
+
+    // Only the actual outer edge contributes to contrast, not internal mark edges.
+    cv::Mat band = cv::Mat::zeros(roi.size(), CV_8UC1);
+    cv::drawContours(band, contours, 0, cv::Scalar(255), 2 * kBackgroundRadius + 1,
+        cv::LINE_8, cv::noArray(), 0, -roi.tl());
+    cv::Mat inner_band, outer_band;
+    cv::bitwise_and(band, interior, inner_band);
+    cv::bitwise_not(interior, outer_band);
+    cv::bitwise_and(band, outer_band, outer_band);
+    if (cv::countNonZero(inner_band) > 0 && cv::countNonZero(outer_band) > 0) {
+        result.contrast = static_cast<float>(std::abs(
+            cv::mean(gray_roi, inner_band)[0] - cv::mean(gray_roi, outer_band)[0]));
+    }
+    result.sharpness = measure_contour_sharpness(gray_roi, contour, -roi.tl());
 }
 
 } // namespace iso_detail

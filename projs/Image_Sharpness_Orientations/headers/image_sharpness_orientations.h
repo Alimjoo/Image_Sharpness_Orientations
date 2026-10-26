@@ -51,6 +51,22 @@ public:
     /// @return from Image_Sharpness_Orientations_Error_Codes；ISO_OK不代表全部匹配
     int Detect(const CHImage& src, Image_Sharpness_Orientations_Detect_Result& result) const;
 
+    /// @brief 独立检测最大投影外边缘，拟合椭圆并测量外边缘清晰度；无需注册基准
+    /// @param src 8位灰度/BGR/BGRA图；完整投影必须位于图像内，内部图案不参与椭圆拟合
+    /// @param result 输出真实轮廓、椭圆中心/半轴a和b/方向/轴比/拟合误差、亮度、清晰度和对比度
+    /// @param params 投影明暗选择、二值化阈值和最小面积；本次调用使用，不修改已有基准
+    /// @return ISO_OK表示测量成功，不代表投影合格；失败时清空result
+    int DetectOuterEdge(const CHImage& src, Image_Sharpness_Orientations_Outer_Edge_Result& result,
+        Image_Sharpness_Orientations_Outer_Edge_Params params = Image_Sharpness_Orientations_Outer_Edge_Params()) const;
+
+    /// @brief 独立九点亮度检测：自动布点、整圆盘避黑或用户指定9点；无需注册基准
+    /// @param src 8位灰度/BGR/BGRA图；亮度测量始终使用原始灰度像素
+    /// @param result 每个点分别输出原坐标、实际坐标、移动标记、状态、采样像素数及平均灰度
+    /// @param params 模式、缩进量、圆盘直径、避黑阈值/搜索半径、手动坐标及轮廓参数
+    /// @return ISO_OK: 9点均有效；ISO_PartialMeasurement: 保留9点结果，检查各点valid/status；其他错误清空result
+    int DetectBrightness(const CHImage& src, Image_Sharpness_Orientations_Brightness_Result& result,
+        Image_Sharpness_Orientations_Brightness_Params params = Image_Sharpness_Orientations_Brightness_Params()) const;
+
     // 每个实例独立保存一套基准，不能复制；注册和检测请勿在同一实例上并发执行。
     CH_Image_Sharpness_Orientations(const CH_Image_Sharpness_Orientations&) = delete;
     CH_Image_Sharpness_Orientations& operator=(const CH_Image_Sharpness_Orientations&) = delete;

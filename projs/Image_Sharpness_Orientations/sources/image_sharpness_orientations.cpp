@@ -1,8 +1,11 @@
 #include "image_sharpness_orientations.h"
 #include "image_sharpness_orientations_core.h"
+#include "outer_edge.h"
+#include "brightness_measurement.h"
 
 #include <exception>
 #include <memory>
+#include <utility>
 
 class CH_Image_Sharpness_Orientations::Impl {
 public:
@@ -54,6 +57,36 @@ int CH_Image_Sharpness_Orientations::Detect(const CHImage& src,
         if (status != ISO_OK) return status;
         iso_detail::match_shapes(impl_->base, impl_->frame, frame, result);
         return ISO_OK;
+    } catch (const std::exception&) {
+        result = {};
+        return ISO_Fail;
+    }
+}
+
+int CH_Image_Sharpness_Orientations::DetectOuterEdge(const CHImage& src,
+    Image_Sharpness_Orientations_Outer_Edge_Result& result,
+    Image_Sharpness_Orientations_Outer_Edge_Params params) const {
+    result = {};
+    try {
+        Image_Sharpness_Orientations_Outer_Edge_Result next;
+        const int status = iso_detail::detect_outer_edge(src, params, next);
+        if (status == ISO_OK) result = std::move(next);
+        return status;
+    } catch (const std::exception&) {
+        result = {};
+        return ISO_Fail;
+    }
+}
+
+int CH_Image_Sharpness_Orientations::DetectBrightness(const CHImage& src,
+    Image_Sharpness_Orientations_Brightness_Result& result,
+    Image_Sharpness_Orientations_Brightness_Params params) const {
+    result = {};
+    try {
+        Image_Sharpness_Orientations_Brightness_Result next;
+        const int status = iso_detail::detect_brightness(src, params, next);
+        if (status == ISO_OK || status == ISO_PartialMeasurement) result = std::move(next);
+        return status;
     } catch (const std::exception&) {
         result = {};
         return ISO_Fail;

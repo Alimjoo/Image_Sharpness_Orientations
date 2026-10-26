@@ -533,7 +533,9 @@ int dev() {
         test_dark_and_light_parts();
         test_quality_measurements();
         test_errors_and_formats();
-        std::cout << "All registration, layout/distortion matching, angle, area, brightness, Tenengrad, contrast, and error checks passed.\n";
+        test_outer_edge();
+        test_brightness();
+        std::cout << "All registration, layout/distortion matching, angle, area, brightness, Tenengrad, contrast, outer-edge ellipse, nine-point brightness, and error checks passed.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';
