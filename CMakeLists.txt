@@ -32,6 +32,7 @@ if(WIN32 AND OpenCV_SHARED)
     endif()
 endif()
 
+add_subdirectory(projs/Image_Sharpness_Orientations_Core)
 add_subdirectory(projs/Image_Sharpness_Orientations)
 
 if(BUILD_TESTING)

@@ -169,6 +169,24 @@ The geometry and filtering primitives are documented by OpenCV:
 [contours and moments](https://docs.opencv.org/4.12.0/d3/dc0/group__imgproc__shape.html),
 [Sobel filtering](https://docs.opencv.org/4.12.0/d4/d86/group__imgproc__filter.html).
 
+## Source organization
+
+`projs/Image_Sharpness_Orientations` owns the public headers, exported API,
+instance state, and packaging. Its `.cpp` delegates the algorithm work to the
+internal static library in `projs/Image_Sharpness_Orientations_Core`:
+
+- `shape_extraction.cpp`: parameter validation, segmentation, product-frame
+  normalization, contour extraction, and principal-axis measurements.
+- `quality_measurement.cpp`: foreground brightness, local contrast, and
+  Sobel/Tenengrad sharpness.
+- `assignment.cpp`: minimum-cost one-to-one assignment.
+- `layout_matching.cpp`: layout descriptors, rotation search, shape matching,
+  and relative-angle results.
+
+The core library is linked privately into the final API library. Its headers
+and static archive are internal build artifacts; consumers continue to use the
+same public headers and shared library.
+
 ## Build and test
 
 Requires CMake 3.18+, a C++17 compiler, and OpenCV 4.x (tested with 4.12.0).

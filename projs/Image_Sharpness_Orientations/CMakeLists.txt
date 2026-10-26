@@ -22,7 +22,10 @@ set_target_properties(Image_Sharpness_Orientations PROPERTIES
 )
 target_include_directories(Image_Sharpness_Orientations PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/headers")
 target_include_directories(Image_Sharpness_Orientations SYSTEM PUBLIC ${OpenCV_INCLUDE_DIRS})
-target_link_libraries(Image_Sharpness_Orientations PUBLIC opencv_core opencv_imgproc)
+target_link_libraries(Image_Sharpness_Orientations
+    PUBLIC opencv_core opencv_imgproc
+    PRIVATE Image_Sharpness_Orientations_Core
+)
 
 if(WIN32)
     target_compile_definitions(Image_Sharpness_Orientations PRIVATE IMAGE_SHARPNESS_ORIENTATIONS_DLL_EXPORTS)
