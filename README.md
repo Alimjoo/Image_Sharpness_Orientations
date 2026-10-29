@@ -2,13 +2,16 @@
 
 C++17/OpenCV library for registering a reference product image and measuring the
 corresponding dark or light parts in subsequent images, plus independent outer
-projection-edge detection with ellipse fitting and nine-point brightness measurement. The public interface follows
+projection-edge detection with ellipse fitting, nine-point brightness measurement,
+and reference-object calibration. The public interface follows
 `Alg_CH`: an exported `CH_...` class, `CHImage`/contour aliases, parameter/result
 structures, integer return codes, and Chinese API comments.
 
 The four operations (`RegisterBase`, `Detect`, `DetectOuterEdge`, and `DetectBrightness`) are declared in
 `projs/Image_Sharpness_Orientations/headers/image_sharpness_orientations.h`.
 Their types are in the adjacent `image_sharpness_orientations_structs.h`.
+The independent `CH_Image_Calibration` class is declared in the same public header,
+with its parameters and results in the same structs header.
 
 ## Usage
 
@@ -21,10 +24,10 @@ Registration and matching use separate output structures:
 - `Image_Sharpness_Orientations_Register_Result`: base image size and numbered
   shapes, including their geometry and quality measurements.
 - `Image_Sharpness_Orientations_Detect_Result`: current image size and shapes,
-  plus matching counts, missing base IDs, and overall relative rotation.
+  plus matching counts, missing base IDs, relative rotation, and position offsets.
 
 Both use the same per-shape measurement structure. Its `matched`, `angle`,
-`angle_valid`, and `match_cost` fields are detection-only and remain at their
+`angle_valid`, `match_cost`, `base_center`, and offset fields are detection-only and remain at their
 initial defaults in registration results. Registration supplies each shape's
 absolute principal-axis `orientation` and `orientation_valid` instead.
 
@@ -59,7 +62,7 @@ do not register and detect concurrently on the same instance.
 
 ## Parameters
 
-Registration and matching use three settings:
+Registration and extraction use three settings:
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
@@ -73,6 +76,11 @@ Gaussian smoothing, maximum area ratio 0.25, a 2-pixel contour band, orientation
 anisotropy 0.08, and a 5-pixel local-background dilation radius. Matching allows
 a center residual up to 0.12 in the normalized product frame. Area and shape
 differences contribute bounded costs; they no longer impose rejection thresholds.
+
+`Detect()` also accepts optional per-call `Image_Sharpness_Orientations_Detect_Params`.
+Its `feature_ids` default to `{0, 0}` for automatic angle/position measurements.
+Two different positive registered IDs select a feature pair, as described below.
+This option changes only the overall measurement reference, not extraction or matching.
 
 The simplified parameter struct replaces the previous tuning fields. Quality
 results now use float `mean_brightness`, `sharpness`, and `contrast` fields.
@@ -126,7 +134,10 @@ Faint/broken strokes can change the connected-part count; tune `threshold`,
 | `area` | Area enclosed by that outer contour, in pixels squared, including holes. |
 | `orientation` | Undirected principal axis, [0, 180) degrees, clockwise in image coordinates. |
 | Per-part `angle` | Difference from the corresponding base principal axis, [-90, 90) degrees. |
-| Detection result `angle` | Overall rotation from matched centers, [-180, 180) degrees; a single matched part uses its principal axis. |
+| Detection result `angle` | Overall rotation, [-180, 180) degrees: matched-center least squares by default, or the selected two-feature line rotation. A single matched part in automatic mode uses its principal axis. |
+| Per-part `base_center`, `offset_x`, `offset_y` | Corresponding registered center, and current-minus-base displacement in pixels; use offsets only when `offset_valid` is true. |
+| Detection result `base_reference_center`, `reference_center` | Reference point in the base/current image; use only when `reference_valid` is true. |
+| Detection result `offset_x`, `offset_y` | Displacement of the reported reference point in pixels; use only when `offset_valid` is true. |
 | `mean_brightness` | Mean grayscale intensity of this connected foreground part, 0–255; excludes holes and other parts. |
 | `sharpness` | Sobel/Tenengrad mean gradient energy, `mean(Gx² + Gy²)`, in a narrow band around the outer contour. |
 | `contrast` | Absolute difference between foreground and local-background mean brightness, 0–255. |
@@ -140,8 +151,8 @@ orientations still describe the original input image. This preserves the
 differences needed for subsequent deformation analysis. Across different
 resolutions or camera poses, account for image scale/registration before
 interpreting raw pixel or area differences as physical deformation. The overall
-`angle` remains a least-squares rotation of matched centers in original image
-coordinates; it does not describe the complete distortion.
+`angle` uses original image coordinates, with least-squares rotation in automatic
+mode or a directed line in two-feature mode; it does not describe the complete distortion.
 
 All three quality measurements use the original grayscale pixels, not the
 smoothed segmentation image. Foreground brightness uses only the current
@@ -170,6 +181,73 @@ band rather than an OCR character crop.
 The geometry and filtering primitives are documented by OpenCV:
 [contours and moments](https://docs.opencv.org/4.12.0/d3/dc0/group__imgproc__shape.html),
 [Sobel filtering](https://docs.opencv.org/4.12.0/d4/d86/group__imgproc__filter.html).
+
+## Angle and position in Detect
+
+The existing `Detect(image, result)` call uses automatic measurements. Each matched
+part reports `base_center`, plus `offset_x = center.x - base_center.x` and
+`offset_y = center.y - base_center.y` when `offset_valid=true`. Right and down are
+positive. Unmatched parts retain zero offsets with `offset_valid=false`.
+These are measured displacements, including any movement due to rotation, scale,
+or deformation; no normalization or rotation compensation is applied to them.
+
+For automatic overall position, the reference is the arithmetic mean of the
+matched part centers. The base reference uses **the same IDs** as the current
+reference, so a missing or extra part alone cannot create a spurious displacement
+by changing only one side of the average. `reference_ids` identifies the subset
+used. That reference location can change as parts disappear; select a fixed pair
+when the software needs a consistent reference while unrelated parts go missing.
+A single circular feature can provide a valid position while its angle remains
+unavailable.
+
+To measure the line and midpoint of two selected features, choose their registered
+IDs after `RegisterBase()` and pass per-call options:
+
+```cpp
+Image_Sharpness_Orientations_Detect_Params options;
+options.feature_ids = {1, 4}; // Select two IDs from base_result.shapes.
+const int status = detector.Detect(current_image, current_result, options);
+if (status == ISO_OK) {
+    if (current_result.angle_valid) {
+        // current_result.angle: relative clockwise rotation, in degrees
+    }
+    if (current_result.offset_valid) {
+        // current_result.offset_x / offset_y: midpoint displacement, in pixels
+    }
+}
+```
+
+This uses each selected shape's contour centroid as the feature point. The
+directed line from the first ID to the second defines the angle, and their midpoint
+defines position. It does not select arbitrary corners or user-drawn image points.
+`using_feature_pair=true` identifies this mode, and `reference_ids` preserves the
+requested pair order. Reversing the pair in both base/current images leaves the
+relative rotation and midpoint displacement unchanged.
+
+If either selected feature is missing, or the selected centers coincide in either
+image, `angle_valid`, `reference_valid`, and `offset_valid` are false. There is no
+fallback to unrelated features. Matching and individual part measurements remain
+available. `{0,0}` selects automatic measurements; mixed zero/positive IDs,
+negative IDs, duplicate IDs, or IDs absent from the registered base return
+`ISO_InvalidParameter` and clear the output. Selection is not stored in the
+detector: a subsequent two-argument call uses automatic measurements again.
+
+Overall offsets are `reference_center - base_reference_center`. They describe
+displacement at that reference point, not the translation component of a transform
+around the image origin. Both reference coordinates are returned in double
+precision for display or further calculations.
+
+Displacements assume the same pixel coordinate frame and camera scale. When input
+dimensions differ from `base_image_size`, all `offset_valid` flags are false and
+offset values remain zero. Matching, reference coordinates, and angle calculations
+continue. Equal dimensions alone cannot prove that camera zoom, crop origin, or
+geometry stayed fixed; the caller must maintain that relationship. A compatible
+millimeters-per-pixel calibration can be applied by the software team.
+
+There are **no angle/displacement acceptance limits or product OK/NG decisions**.
+Validity flags describe whether the measurement is available, not whether its
+value is acceptable. Recompile consumers with the updated public structs and
+library; the package still contains only the original two public headers.
 
 ## Independent outer-edge detection
 
@@ -332,6 +410,92 @@ using OpenCV's grayscale conversion. They are camera brightness readings; physic
 illuminance in lux or luminance in cd/m² requires a separate camera/exposure
 calibration. The API does not infer those units or apply product acceptance limits.
 
+## Pixel-to-millimeter calibration
+
+`CH_Image_Calibration::Calibrate()` detects a known white/bright or black/dark
+reference object and returns a **uniform millimeters-per-pixel scale**. It is a
+separate, stateless class and requires no product registration. Use the same camera
+geometry, resolution, lens settings, and measurement plane for calibration and
+subsequent measurements.
+
+```cpp
+#include "image_sharpness_orientations.h"
+
+CH_Image_Calibration calibrator;
+Image_Calibration_Params params;
+params.shape = Image_Calibration_Shape::Rectangle;
+params.detect_white = true; // false for a black target on a bright background
+params.width_mm = 50.0;
+params.height_mm = 50.0;    // square: same rectangle algorithm, equal dimensions
+Image_Calibration_Result calibration;
+const int status = calibrator.Calibrate(reference_image, calibration, params);
+if (status == ISO_OK) {
+    const double measured_length_mm = measured_length_px * calibration.mm_per_pixel;
+    // For an outer-edge ellipse: full major diameter = 2*a*mm_per_pixel.
+}
+```
+
+For a circular reference, select `Image_Calibration_Shape::Circle` and set
+`diameter_mm` to the independently known physical diameter. Rectangle width/height
+are ignored in circle mode; circle diameter is ignored in rectangle mode. A square
+does not need a separate mode.
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `shape` | `Circle` | `Circle` or `Rectangle`, including squares. |
+| `detect_white` | `true` | Bright reference on a dark background; `false` selects a dark reference. |
+| `diameter_mm` | `0` | Required finite positive diameter for circle mode. |
+| `width_mm`, `height_mm` | `0`, `0` | Required finite positive physical side lengths for rectangle mode. |
+| `threshold` | `-1` | Otsu, or a fixed grayscale threshold in 0–255. |
+| `min_area` | `100.0` | Finite positive minimum outer-contour area in pixels squared. |
+| `max_relative_error` | `0.03` | Shape and scale-consistency tolerance, in (0, 0.25]; default 3%, not an accuracy guarantee. |
+
+The largest external contour of the selected polarity is used. A clipped target
+returns `ISO_OuterEdgeClipped`; the routine does not substitute a smaller object.
+Internal holes do not become separate calibration objects.
+
+For a circle, the detector fits an ellipse and checks its boundary-fit error and
+the agreement between scales inferred from its two diameters. A noticeably
+stretched ellipse is rejected for this uniform-scale model.
+
+For a rectangle, a convex four-corner approximation identifies the edges. Each
+edge is fitted to its contour pixels, excluding the corners' immediate vicinity;
+neighboring fitted lines are intersected to obtain the four corners. Checks cover
+edge-fit residuals, parallel opposite edges, perpendicular adjacent edges, and
+agreement between opposite side lengths. Mean opposite-side lengths are matched
+to the supplied physical width and height using their aspect ratio. This supports
+rotated rectangles, width smaller than height, and squares. Corner identities are
+inherently ambiguous on an unmarked symmetric target; the reported corners are
+clockwise, and edges 0–1 and 2–3 correspond to `width_mm`.
+
+`width_px` and `height_px` are the measured rectangle side lengths, or the complete
+major/minor diameters of the fitted circle. Two diagnostic scales are computed:
+`mm_per_pixel_width = width_mm / width_px` and
+`mm_per_pixel_height = height_mm / height_px`. For a circle both physical dimensions
+equal `diameter_mm`. These are **target-side scales, not image-X/image-Y scales**.
+Their relative disagreement must be within the configured tolerance. The final
+least-squares uniform scale is:
+
+```text
+mm_per_pixel = (width_px*width_mm + height_px*height_mm)
+             / (width_px*width_px + height_px*height_px)
+pixels_per_mm = 1 / mm_per_pixel
+```
+
+Results also contain the image resolution, real contour, fitted center/direction,
+rectangle corners, physical dimensions, `scale_disagreement`, and `fit_error`.
+`ISO_OK` and `valid=true` indicate a usable result. Invalid geometry or inconsistent
+physical aspect ratio returns `ISO_CalibrationTargetInvalid`; every failure clears
+the result. Geometry checks cannot establish the correctness of the absolute
+physical dimensions supplied by the caller.
+
+This model assumes a front-facing reference on a fixed measurement plane with
+negligible or previously corrected lens distortion. It does not estimate camera
+intrinsics, perspective correction, or separate image-axis scales. Apply the
+returned uniform scale to lengths only under the same capture geometry; an area
+in pixels squared is multiplied by the scale squared. Calibration accuracy must
+be checked against independent known lengths on the actual measurement setup.
+
 ## Source organization
 
 `projs/Image_Sharpness_Orientations` owns the public headers, exported API,
@@ -345,9 +509,14 @@ internal static library in `projs/Image_Sharpness_Orientations_Core`:
 - `outer_edge.cpp`: independent projection segmentation and ellipse fitting.
 - `brightness_measurement.cpp`: nine-point placement, full-disk sampling, and
   nearest valid placement for black-area avoidance.
+- `calibration.cpp`: reference-shape validation, rectangle edge fitting, and
+  pixel-to-millimeter scale estimation. The separate API wrapper is
+  `projs/Image_Sharpness_Orientations/sources/image_calibration.cpp`.
 - `assignment.cpp`: minimum-cost one-to-one assignment.
 - `layout_matching.cpp`: layout descriptors, rotation search, shape matching,
-  and relative-angle results.
+  and per-shape relative angles.
+- `pose_measurement.cpp`: individual offsets, automatic overall pose, and selected
+  two-feature line/midpoint measurements.
 
 The core library is linked privately into the final API library. Its headers
 and static archive are internal build artifacts; consumers continue to use the
@@ -391,8 +560,32 @@ Nine-point tests cover rotated-ellipse placement, pixel insets, individual known
 brightness values, manual coordinates, full-disk overlap with isolated dark pixels,
 nearest replacements, bounded failed searches, irregular outlines, exclusion of
 bright background outside the projection, formats, and partial measurement states.
+Calibration tests cover known scales for white/black circles, rotated rectangles
+and squares, swapped physical width/height, image resizing, color and ROI inputs,
+wrong shapes/aspect ratios, skewed or clipped targets, and invalid parameters.
+Pose tests cover known translation/rotation, per-shape displacements, selected
+feature pairs, unchanged defaults, missing/extra/coincident features, different
+resolutions, invalid IDs, and independence between angle and position validity.
 
 ## Run on image files
+
+To calibrate using a white circle, black rectangle, or white square:
+
+```sh
+cmake --build build --config Debug
+./build/Image_Sharpness_Orientations_test --calibrate "/path/to/circle.bmp" "test_output/calibration_circle" --shape circle --diameter-mm 80 --white
+./build/Image_Sharpness_Orientations_test --calibrate "/path/to/rectangle.bmp" "test_output/calibration_rectangle" --shape rectangle --width-mm 80 --height-mm 45 --black
+./build/Image_Sharpness_Orientations_test --calibrate "/path/to/square.bmp" "test_output/calibration_square" --shape rectangle --width-mm 50 --height-mm 50 --white
+```
+
+The physical dimensions must describe the actual reference object. The runner
+saves `calibration.png` with the detected contour and fitted edges/ellipse, plus
+`calibration.csv` containing scales, geometry, and consistency diagnostics.
+Rectangle corners are labeled 0–3. Optional `--threshold`, `--min-area`, and
+`--max-error` control segmentation and calibration validation. Dimension options
+belong to their shape: rectangle mode rejects `--diameter-mm`, and circle mode
+rejects `--width-mm`/`--height-mm`. Failure returns exit code 1 and leaves existing
+output files unchanged; command syntax errors return 2.
 
 To label and measure the nine brightness disks:
 
@@ -444,13 +637,26 @@ arguments runs the automated tests.
 For the existing internal-mark registration/matching test:
 
 ```text
-build/Release/Image_Sharpness_Orientations_test.exe --images BASE_IMAGE OUTPUT_DIR IMAGE [IMAGE ...]
+build/Release/Image_Sharpness_Orientations_test.exe --images BASE_IMAGE OUTPUT_DIR [--features ID1 ID2] IMAGE [IMAGE ...]
 ```
 
 The runner uses the default dark-area settings. It writes `base.png`, a numbered contour overlay for each current image,
 `summary.csv`, and `measurements.csv`. Both CSV files include a `stage` column
 (`register` or `detect`); detection-only matching fields are blank for registration.
 Unmatched contours are red and labeled `unmatched`.
+Both CSVs also include displacement values and validity. `summary.csv` records
+the base/current reference coordinates, reference IDs, and whether a pair was
+selected; `measurements.csv` includes each matched part's base center and offsets.
+Unavailable displacement values are blank. Detection overlays show the current
+reference in cyan and the base reference/displacement in magenta when valid;
+two-feature mode also draws the current connecting line. Overlays are resized for
+viewing and include a caption band; numeric coordinates remain in the input image.
+For example, on the current macOS build:
+
+```sh
+./build/Image_Sharpness_Orientations_test --images "/path/base.bmp" "test_output/pose" --features 1 4 "/path/current.bmp"
+```
+
 It supports Windows Unicode input paths.
 Exit status is 0 only when every current image has a complete match; 1 also
 indicates a successfully processed series containing missing/extra parts, so
@@ -486,7 +692,8 @@ Each build writes to
 and collects public files in
 `build/projs/Image_Sharpness_Orientations/Image_Sharpness_Orientations_Public_Release/`.
 
-The public package contains both headers, the library, and on Windows the import
+The public package contains exactly two headers, `image_sharpness_orientations.h`
+and `image_sharpness_orientations_structs.h`, the library, and on Windows the import
 library. OpenCV DLLs are not copied into the library output or public package.
 Only the local test executable receives OpenCV runtime copies. Debug libraries
 use the `d` suffix so Debug and Release coexist.
@@ -495,3 +702,30 @@ Consumers supply their own compatible OpenCV development headers, libraries,
 and runtime DLLs. Include the package directory and OpenCV include directory,
 link the corresponding import libraries, and make the matching runtime DLLs
 available to the consuming executable.
+
+## GitHub Windows release workflow
+
+`.github/workflows/release-win-opencv.yml` builds Windows x64 with Visual Studio
+2022/v143 and the official OpenCV 4.12.0 package. It verifies the dependency archive,
+builds and runs the API tests in both Release and Debug, then creates one flat ZIP
+containing exactly:
+
+```text
+image_sharpness_orientations.h
+image_sharpness_orientations_structs.h
+Image_Sharpness_Orientations.dll
+Image_Sharpness_Orientations.lib
+Image_Sharpness_Orientationsd.dll
+Image_Sharpness_Orientationsd.lib
+```
+
+Push a tag beginning with `v` (for example `v1.0.0`) to build and attach
+`Image_Sharpness_Orientations_v1.0.0_win64.zip` to its GitHub Release. The same ZIP
+is available as an Actions artifact. The workflow can also be started with
+**Actions → Run workflow**; manual runs produce an Actions download without
+publishing a release. Branch-based manual builds use `manual-<run number>` in the
+ZIP filename.
+
+The ZIP is checked for exactly these six nonempty files before upload. Internal
+core libraries, test programs, PDBs, and OpenCV binaries are not included; consumers
+provide the matching OpenCV development files and runtime as described above.

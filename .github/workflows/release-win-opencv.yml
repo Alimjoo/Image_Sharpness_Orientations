@@ -1,0 +1,148 @@
+name: Build Image_Sharpness_Orientations (Win x64) + Zip + Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  OPENCV_VERSION: "4.12.0"
+  # Official opencv-4.12.0-windows.exe release asset:
+  # https://github.com/opencv/opencv/releases/expanded_assets/4.12.0
+  OPENCV_SHA256: "b753b14d880b9bc8d89d6acd3b665c040baec0211078435432fcae117db707af"
+
+jobs:
+  build-win-x64:
+    # Keep the runner aligned with the VS2022 generator and v143 toolset.
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download and validate OpenCV Windows x64 package
+        run: |
+          $deps = Join-Path $env:RUNNER_TEMP "image-sharpness-opencv"
+          $archive = Join-Path $env:RUNNER_TEMP "opencv-$env:OPENCV_VERSION-windows.exe"
+          $uri = "https://github.com/opencv/opencv/releases/download/$env:OPENCV_VERSION/opencv-$env:OPENCV_VERSION-windows.exe"
+          New-Item -ItemType Directory -Force -Path $deps | Out-Null
+
+          Invoke-WebRequest -Uri $uri -OutFile $archive
+          $digest = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          if ($digest -ne $env:OPENCV_SHA256) { throw "OpenCV archive SHA256 mismatch: $digest" }
+
+          7z x $archive "-o$deps" -y -bso0
+          if ($LASTEXITCODE -ne 0) { throw "OpenCV extraction failed with exit code $LASTEXITCODE" }
+
+          # The pinned official package provides both Debug and Release through opencv_world.
+          $opencvDir = Join-Path $deps "opencv\build\x64\vc16\lib"
+          $opencvBin = Join-Path $deps "opencv\build\x64\vc16\bin"
+          $opencvSuffix = $env:OPENCV_VERSION -replace '\.', ''
+          $required = @((Join-Path $opencvDir "OpenCVConfig.cmake"))
+          foreach ($suffix in @('', 'd')) {
+            $required += Join-Path $opencvDir "opencv_world$opencvSuffix$suffix.lib"
+            $required += Join-Path $opencvBin "opencv_world$opencvSuffix$suffix.dll"
+          }
+          foreach ($file in $required) {
+            if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing OpenCV dependency: $file" }
+            if ((Get-Item -LiteralPath $file).Length -eq 0) { throw "Empty OpenCV dependency: $file" }
+          }
+          "OpenCV_DIR=$opencvDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Configure VS2022 x64
+        run: |
+          cmake -S . -B build `
+            -G "Visual Studio 17 2022" -A x64 -T v143 `
+            "-DOpenCV_DIR=$env:OpenCV_DIR" `
+            -DBUILD_TESTING=ON
+
+      - name: Build Release
+        run: cmake --build build --config Release --parallel
+
+      - name: Test Release
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error
+
+      - name: Build Debug
+        run: cmake --build build --config Debug --parallel
+
+      - name: Test Debug
+        run: ctest --test-dir build -C Debug --output-on-failure --no-tests=error
+
+      - name: Package exactly two headers, two DLLs, and two import libraries
+        run: |
+          $collated = Join-Path $env:GITHUB_WORKSPACE "build\projs\Image_Sharpness_Orientations\Image_Sharpness_Orientations_Public_Release"
+          $stage = Join-Path $env:RUNNER_TEMP "image-sharpness-package"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          $requiredFiles = @(
+            "image_sharpness_orientations.h",
+            "image_sharpness_orientations_structs.h",
+            "Image_Sharpness_Orientations.dll",
+            "Image_Sharpness_Orientations.lib",
+            "Image_Sharpness_Orientationsd.dll",
+            "Image_Sharpness_Orientationsd.lib"
+          )
+          foreach ($file in $requiredFiles) {
+            $source = Join-Path $collated $file
+            if (!(Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing package file: $source" }
+            if ((Get-Item -LiteralPath $source).Length -eq 0) { throw "Empty package file: $source" }
+            Copy-Item -LiteralPath $source -Destination $stage -Force
+          }
+
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $env:GITHUB_REF_NAME
+          } else {
+            "manual-$env:GITHUB_RUN_NUMBER"
+          }
+          $version = $version -replace '[^A-Za-z0-9._-]', '_'
+          $basename = "Image_Sharpness_Orientations_${version}_win64"
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          $zipPath = Join-Path $env:GITHUB_WORKSPACE "dist\$basename.zip"
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zipPath -Force
+
+          # Check the final ZIP, including flat paths and nonempty files, before uploading.
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+          try {
+            $entries = @($zip.Entries)
+            $actualNames = @($entries | ForEach-Object { $_.FullName } | Sort-Object)
+            $expectedNames = @($requiredFiles | Sort-Object)
+            if ($entries.Count -ne 6 -or (Compare-Object $expectedNames $actualNames)) {
+              throw "ZIP contents differ from the six required files: $($actualNames -join ', ')"
+            }
+            if (@($entries | Where-Object { $_.Length -eq 0 }).Count -ne 0) {
+              throw "ZIP contains an empty file"
+            }
+          } finally {
+            $zip.Dispose()
+          }
+          "PACKAGE_BASENAME=$basename" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Created $zipPath"
+          Get-ChildItem -LiteralPath $stage | Sort-Object Name | Format-Table Name, Length
+
+      - name: Upload ZIP as an Actions download
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/${{ env.PACKAGE_BASENAME }}.zip
+          # The file is already zipped; keep it as one downloadable ZIP.
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload ZIP to GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/${{ env.PACKAGE_BASENAME }}.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

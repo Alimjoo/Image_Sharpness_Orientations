@@ -42,8 +42,11 @@ if(BUILD_TESTING)
         test/test_dev.cpp
         test/test_outer_edge.cpp
         test/test_brightness.cpp
+        test/test_calibration.cpp
+        test/test_pose.cpp
         test/outer_edge_image_runner.cpp
         test/brightness_image_runner.cpp
+        test/calibration_image_runner.cpp
     )
     target_include_directories(Image_Sharpness_Orientations_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(Image_Sharpness_Orientations_test PRIVATE

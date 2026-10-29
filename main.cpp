@@ -10,5 +10,6 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
     if (args[0] == "--outer-edge") return TEST_IMAGE_SHARPNESS_ORIENTATIONS::run_outer_edge_image(args);
     if (args[0] == "--brightness") return TEST_IMAGE_SHARPNESS_ORIENTATIONS::run_brightness_image(args);
+    if (args[0] == "--calibrate") return TEST_IMAGE_SHARPNESS_ORIENTATIONS::run_calibration_image(args);
     return TEST_IMAGE_SHARPNESS_ORIENTATIONS::run_images(args);
 }

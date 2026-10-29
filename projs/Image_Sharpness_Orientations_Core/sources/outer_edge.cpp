@@ -8,8 +8,8 @@
 
 namespace iso_detail {
 
-int fit_outer_edge(const CHImage& src, const Image_Sharpness_Orientations_Outer_Edge_Params& params,
-    Image_Sharpness_Orientations_Outer_Edge_Result& result, cv::Mat& gray) {
+int extract_outer_contour(const CHImage& src, const Image_Sharpness_Orientations_Outer_Edge_Params& params,
+    std::vector<cv::Point>& contour, cv::Mat& gray) {
     if (params.threshold < -1 || params.threshold > 255 ||
         !std::isfinite(params.min_area) || params.min_area <= 0.0) return ISO_InvalidParameter;
     if (src.empty()) return ISO_ImageIsEmpty;
@@ -43,11 +43,20 @@ int fit_outer_edge(const CHImage& src, const Image_Sharpness_Orientations_Outer_
         bounds.x + bounds.width >= gray.cols || bounds.y + bounds.height >= gray.rows) {
         return ISO_OuterEdgeClipped;
     }
-    if (largest->size() < 5) return ISO_EllipseFitFailed;
+    contour = *largest;
+    return ISO_OK;
+}
+
+int fit_outer_edge(const CHImage& src, const Image_Sharpness_Orientations_Outer_Edge_Params& params,
+    Image_Sharpness_Orientations_Outer_Edge_Result& result, cv::Mat& gray) {
+    std::vector<cv::Point> contour;
+    const int status = extract_outer_contour(src, params, contour, gray);
+    if (status != ISO_OK) return status;
+    if (contour.size() < 5) return ISO_EllipseFitFailed;
 
     cv::RotatedRect ellipse;
     try {
-        ellipse = cv::fitEllipse(*largest);
+        ellipse = cv::fitEllipse(contour);
     } catch (const cv::Exception&) {
         return ISO_EllipseFitFailed;
     }
@@ -58,8 +67,8 @@ int fit_outer_edge(const CHImage& src, const Image_Sharpness_Orientations_Outer_
     }
 
     result.image_size = src.size();
-    result.bounds = bounds;
-    result.area = area;
+    result.bounds = cv::boundingRect(contour);
+    result.area = cv::contourArea(contour);
     result.center = ellipse.center;
     result.a = 0.5 * std::max(ellipse.size.width, ellipse.size.height);
     result.b = 0.5 * std::min(ellipse.size.width, ellipse.size.height);
@@ -74,8 +83,8 @@ int fit_outer_edge(const CHImage& src, const Image_Sharpness_Orientations_Outer_
     const double radians = result.orientation * kPi / 180.0;
     const double c = std::cos(radians), s = std::sin(radians);
     double squared_error = 0.0;
-    result.contour.reserve(largest->size());
-    for (const auto& point : *largest) {
+    result.contour.reserve(contour.size());
+    for (const auto& point : contour) {
         result.contour.emplace_back(point);
         const double dx = point.x - static_cast<double>(result.center.x);
         const double dy = point.y - static_cast<double>(result.center.y);
@@ -84,7 +93,7 @@ int fit_outer_edge(const CHImage& src, const Image_Sharpness_Orientations_Outer_
         const double error = std::hypot(x, y) - 1.0;
         squared_error += error * error;
     }
-    result.fit_error = std::sqrt(squared_error / static_cast<double>(largest->size()));
+    result.fit_error = std::sqrt(squared_error / static_cast<double>(contour.size()));
     return ISO_OK;
 }
 

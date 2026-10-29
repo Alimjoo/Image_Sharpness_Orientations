@@ -8,9 +8,12 @@ namespace TEST_IMAGE_SHARPNESS_ORIENTATIONS {
     int dev();
     void test_outer_edge();
     void test_brightness();
+    void test_calibration();
+    void test_pose();
     int run_images(const std::vector<std::filesystem::path>& args);
     int run_outer_edge_image(const std::vector<std::filesystem::path>& args);
     int run_brightness_image(const std::vector<std::filesystem::path>& args);
+    int run_calibration_image(const std::vector<std::filesystem::path>& args);
 }
 
 #endif // IMAGE_SHARPNESS_ORIENTATIONS_TEST_MAIN_H

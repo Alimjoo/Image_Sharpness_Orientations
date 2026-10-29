@@ -47,9 +47,16 @@ public:
 
     /// @brief 以全局位置和相对顺序为主、形状为辅进行一对一匹配，输出编号及原图测量值
     /// @param src 待检测图，应为相同布局；允许不同分辨率、非等比缩放、剪切及适度透视/局部变形
-    /// @param result 输出轮廓、编号、角度、面积、平均亮度、Tenengrad清晰度、对比度以及缺失编号
+    /// @param result 输出轮廓、编号、角度、位置偏移及有效性、面积、亮度、清晰度、对比度和缺失编号
     /// @return from Image_Sharpness_Orientations_Error_Codes；ISO_OK不代表全部匹配
     int Detect(const CHImage& src, Image_Sharpness_Orientations_Detect_Result& result) const;
+
+    /// @brief 按本次指定的两个基准编号测量整体角度/中点偏移；默认选项使用全部匹配中心
+    /// @param params 在RegisterBase输出编号后选择feature_ids；不修改基准，不改变匹配或各图形测量
+    /// @return 非法编号返回ISO_InvalidParameter；缺失/重合特征通过angle_valid/reference_valid/offset_valid报告
+    /// @note 偏移单位为像素；图像尺寸不同则offset_valid=false，角度和匹配仍照常计算；产品合格判定由调用方完成
+    int Detect(const CHImage& src, Image_Sharpness_Orientations_Detect_Result& result,
+        Image_Sharpness_Orientations_Detect_Params params) const;
 
     /// @brief 独立检测最大投影外边缘，拟合椭圆并测量外边缘清晰度；无需注册基准
     /// @param src 8位灰度/BGR/BGRA图；完整投影必须位于图像内，内部图案不参与椭圆拟合
@@ -74,6 +81,22 @@ public:
 private:
     class Impl;
     Impl* impl_;
+};
+
+#pragma endregion
+
+#pragma region 图像尺寸标定
+
+// 独立标定类，无注册状态；每次调用使用用户提供的已知尺寸标定物。
+class IMAGE_SHARPNESS_ORIENTATIONS_API CH_Image_Calibration {
+public:
+    /// @brief 检测白/黑圆形或矩形标定物，计算统一毫米/像素比例；正方形使用矩形模式
+    /// @param src 8位灰度/BGR/BGRA图；完整标定物位于图像内，选取指定极性的最大外轮廓
+    /// @param result 检测几何、毫米/像素和像素/毫米比例及几何一致性诊断
+    /// @param params 物体形状、极性、实际直径或宽高及检测容差
+    /// @return ISO_OK表示统一比例标定成功；任何失败均清空result
+    /// @note 适用于正对测量平面的固定相机；不估计透视变换或镜头畸变。实际尺寸必须来自独立已知目标。
+    int Calibrate(const CHImage& src, Image_Calibration_Result& result, Image_Calibration_Params params) const;
 };
 
 #pragma endregion

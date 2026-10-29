@@ -2,6 +2,7 @@ add_library(Image_Sharpness_Orientations SHARED
     headers/image_sharpness_orientations.h
     headers/image_sharpness_orientations_structs.h
     sources/image_sharpness_orientations.cpp
+    sources/image_calibration.cpp
 )
 
 set(IMAGE_SHARPNESS_ORIENTATIONS_CONFIG "$<IF:$<BOOL:$<CONFIG>>,$<CONFIG>,Release>")

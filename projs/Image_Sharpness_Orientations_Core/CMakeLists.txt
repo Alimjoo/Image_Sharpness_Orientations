@@ -5,12 +5,16 @@ add_library(Image_Sharpness_Orientations_Core STATIC
     headers/assignment.h
     headers/outer_edge.h
     headers/brightness_measurement.h
+    headers/calibration.h
+    headers/pose_measurement.h
     sources/shape_extraction.cpp
     sources/quality_measurement.cpp
     sources/assignment.cpp
     sources/layout_matching.cpp
     sources/outer_edge.cpp
     sources/brightness_measurement.cpp
+    sources/calibration.cpp
+    sources/pose_measurement.cpp
 )
 
 set_target_properties(Image_Sharpness_Orientations_Core PROPERTIES

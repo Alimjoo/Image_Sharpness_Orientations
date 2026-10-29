@@ -22,6 +22,7 @@ enum Image_Sharpness_Orientations_Error_Codes {
     ISO_OuterEdgeClipped = 9,     // 最大外轮廓接触图像边界，无法测量完整投影
     ISO_EllipseFitFailed = 10,    // 外轮廓不能拟合为有效椭圆
     ISO_PartialMeasurement = 11,  // 九点测量部分/全部点无效；保留各点状态和有效测量值
+    ISO_CalibrationTargetInvalid = 12, // 标定物形状不符，或视角/长宽比例不能满足统一比例标定
     ISO_Fail = -1                 // 处理失败
 };
 
@@ -29,6 +30,13 @@ struct Image_Sharpness_Orientations_Params {
     bool detect_dark_area = true; // true: 检测亮底上的暗色图形；false: 检测暗底上的白色/亮色图形
     int threshold = -1;           // -1: Otsu自动阈值；0~255: 固定阈值，暗色<=阈值，亮色>阈值
     double min_area = 100.0;      // 最小外轮廓面积，像素平方，必须为有限正数
+};
+
+// Detect每次调用的测量选项；不改变注册参数或匹配算法。
+struct Image_Sharpness_Orientations_Detect_Params {
+    // {0,0}: 使用全部匹配中心自动测量；否则必须为两个不同且存在于基准中的正编号。
+    // 两点模式使用指定中心连线测角度、中点测位置；任一点缺失/两中心重合时不回退到自动模式。
+    std::array<int, 2> feature_ids{0, 0};
 };
 
 // 独立外边缘检测参数；每次调用传入，不依赖RegisterBase保存的参数。
@@ -124,12 +132,16 @@ struct Image_Sharpness_Orientations_Shape {
     // 前景与局部背景平均亮度差的绝对值，范围0~255；没有可用局部背景时为0
     float contrast = 0.0f;
     double match_cost = -1.0;            // 仅检测结果使用：位置/顺序为主、形状为辅的匹配代价，非变形量；未匹配为-1
+    CHPointF base_center;                // 仅检测且matched时有效：对应基准图形中心
+    double offset_x = 0.0;               // 当前中心x-基准中心x，像素；右为正，仅offset_valid时有效
+    double offset_y = 0.0;               // 当前中心y-基准中心y，像素；下为正，仅offset_valid时有效
+    bool offset_valid = false;           // 已匹配且图像分辨率一致；调用方还须保证坐标原点/相机尺度一致
 };
 
 using Image_Sharpness_Orientations_Shapes = std::vector<Image_Sharpness_Orientations_Shape>;
 
 // RegisterBase专用输出：预览已注册的基准图形，不包含检测匹配汇总。
-// shapes中的matched、angle、angle_valid、match_cost仅供Detect使用，注册时保持默认值。
+// shapes中的匹配、相对角度、基准中心和偏移字段仅供Detect使用，注册时保持默认值。
 struct Image_Sharpness_Orientations_Register_Result {
     cv::Size image_size;                       // 基准图尺寸
     Image_Sharpness_Orientations_Shapes shapes; // 基准图形，按id排列；可通过shapes.size()获取数量
@@ -144,7 +156,53 @@ struct Image_Sharpness_Orientations_Detect_Result {
     int matched_count = 0;
     bool all_matched = false;             // 无缺失且无多余图形
     double angle = 0.0;                   // 整体相对基准旋转角，[-180,180)，顺时针为正
-    bool angle_valid = false;            // 至少两个匹配中心可确定整体角度；单个则使用其主轴
+    bool angle_valid = false;            // 自动：匹配中心最小二乘旋转，单个使用其主轴；两点模式：指定连线旋转
+    cv::Size base_image_size;
+    cv::Point2d base_reference_center;    // 本次测量对应的基准参考点，原图像素坐标
+    cv::Point2d reference_center;         // 当前参考点；自动为同一组匹配中心均值，两点模式为中点
+    bool reference_valid = false;        // 两个参考点坐标是否可用；与offset_valid分开以支持不同分辨率匹配
+    std::vector<int> reference_ids;       // 自动：参与参考点计算的匹配编号；两点模式：请求的两个编号，按输入顺序
+    bool using_feature_pair = false;
+    double offset_x = 0.0;               // 当前参考点x-基准参考点x，像素；不是绕图像原点的仿射平移分量
+    double offset_y = 0.0;               // 当前参考点y-基准参考点y，像素
+    bool offset_valid = false;           // 参考点有效且基准/当前图像尺寸相同；未提供OK/NG判定
+};
+
+enum class Image_Calibration_Shape {
+    Circle,
+    Rectangle // 正方形也使用Rectangle，width_mm和height_mm设置相同值
+};
+
+struct Image_Calibration_Params {
+    Image_Calibration_Shape shape = Image_Calibration_Shape::Circle;
+    bool detect_white = true;   // true: 暗底白色/亮色标定物；false: 亮底黑色/暗色标定物
+    double diameter_mm = 0.0;  // 圆形必填：实际直径，有限正数；矩形模式忽略
+    double width_mm = 0.0;     // 矩形必填：实际宽，有限正数；圆形模式忽略
+    double height_mm = 0.0;    // 矩形必填：实际高，有限正数；圆形模式忽略
+    int threshold = -1;        // -1: Otsu；0~255固定阈值，白区>阈值，黑区<=阈值
+    double min_area = 100.0;   // 最小外轮廓面积，像素平方，有限正数
+    double max_relative_error = 0.03; // 几何/两方向比例差容差，(0,0.25]；默认3%，不代表精度保证
+};
+
+// 独立的统一比例标定结果；仅ISO_OK且valid=true时可使用，失败时清空。
+struct Image_Calibration_Result {
+    bool valid = false;
+    Image_Calibration_Shape shape = Image_Calibration_Shape::Circle;
+    cv::Size image_size;            // 标定图像分辨率；改变分辨率/相机几何位置后需要重新标定
+    CHContour contour;             // 标定物真实外轮廓，原图像素坐标
+    CHPointF center;
+    double orientation = 0.0;      // 矩形宽边方向/椭圆长轴方向，[0,180)度，顺时针；对称目标方向不唯一
+    std::array<CHPointF, 4> corners{}; // 仅矩形：拟合边线交点，顺时针；0->1和2->3对应width_mm
+    double width_px = 0.0;         // 矩形：对应宽的两对边平均长度；圆形：拟合椭圆完整长轴直径
+    double height_px = 0.0;        // 矩形：对应高的两对边平均长度；圆形：拟合椭圆完整短轴直径
+    double width_mm = 0.0;         // 矩形：输入宽；圆形：输入直径
+    double height_mm = 0.0;        // 矩形：输入高；圆形：输入直径
+    double mm_per_pixel = 0.0;     // 推荐统一比例，毫米/像素；长度mm=长度px*此值
+    double pixels_per_mm = 0.0;    // 上述比例的倒数，像素/毫米
+    double mm_per_pixel_width = 0.0;  // 宽方向独立估计，仅用于诊断；不是图像X方向比例
+    double mm_per_pixel_height = 0.0; // 高方向独立估计，仅用于诊断；不是图像Y方向比例
+    double scale_disagreement = 0.0;  // abs(s_width-s_height)/mean(s_width,s_height)，无量纲
+    double fit_error = 0.0;        // 圆形：归一化半径RMS；矩形：边线距离RMS/平均边长
 };
 
 #endif // IMAGE_SHARPNESS_ORIENTATIONS_STRUCTS_H

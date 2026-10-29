@@ -439,7 +439,8 @@ CHImage read_image(const std::filesystem::path& path) {
 }
 
 void save_overlay_impl(const std::filesystem::path& path, const CHImage& image,
-    const Image_Sharpness_Orientations_Shapes& shapes, const std::string& caption, bool registration) {
+    const Image_Sharpness_Orientations_Shapes& shapes, const std::string& caption, bool registration,
+    const DetectResult* detection = nullptr) {
     CHImage color;
     if (image.channels() == 1) cv::cvtColor(image, color, cv::COLOR_GRAY2BGR);
     else if (image.channels() == 4) cv::cvtColor(image, color, cv::COLOR_BGRA2BGR);
@@ -456,7 +457,39 @@ void save_overlay_impl(const std::filesystem::path& path, const CHImage& image,
         cv::putText(color, label, center, cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 0), 4, cv::LINE_AA);
         cv::putText(color, label, center, cv::FONT_HERSHEY_SIMPLEX, 0.8, ink, 2, cv::LINE_AA);
     }
-    cv::putText(color, caption, {20, 35}, cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 255), 2, cv::LINE_AA);
+    if (detection && detection->reference_valid) {
+        const auto display_point = [&](cv::Point2d point) {
+            return cv::Point(cvRound(point.x * scale), cvRound(point.y * scale));
+        };
+        if (detection->using_feature_pair) {
+            std::vector<cv::Point> endpoints;
+            for (int id : detection->reference_ids) {
+                const auto found = std::find_if(shapes.begin(), shapes.end(),
+                    [id](const auto& shape) { return shape.matched && shape.id == id; });
+                if (found != shapes.end()) endpoints.push_back(display_point(found->center));
+            }
+            if (endpoints.size() == 2) cv::line(color, endpoints[0], endpoints[1], {255, 255, 0}, 2, cv::LINE_AA);
+        }
+        const auto current = display_point(detection->reference_center);
+        cv::drawMarker(color, current, {255, 255, 0}, cv::MARKER_CROSS, 16, 2, cv::LINE_AA);
+        if (detection->offset_valid) {
+            const auto base = display_point(detection->base_reference_center);
+            cv::drawMarker(color, base, {255, 0, 255}, cv::MARKER_CROSS, 12, 1, cv::LINE_AA);
+            cv::arrowedLine(color, base, current, {255, 0, 255}, 1, cv::LINE_AA, 0, 0.2);
+        }
+    }
+    cv::copyMakeBorder(color, color, 80, 0, 0, std::max(0, 900 - color.cols), cv::BORDER_CONSTANT, {0, 0, 0});
+    cv::putText(color, caption, {20, 30}, cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+    if (detection) {
+        std::ostringstream pose;
+        pose << "Offset (right/down): ";
+        if (detection->offset_valid) pose << std::fixed << std::setprecision(2)
+            << detection->offset_x << ", " << detection->offset_y << " px";
+        else pose << "unavailable";
+        pose << (detection->using_feature_pair ? "   Feature pair:" : "   Automatic references:");
+        for (int id : detection->reference_ids) pose << ' ' << id;
+        cv::putText(color, pose.str(), {20, 60}, cv::FONT_HERSHEY_SIMPLEX, 0.55, {255, 255, 255}, 1, cv::LINE_AA);
+    }
     std::vector<unsigned char> bytes;
     require(cv::imencode(".png", color, bytes), "cannot encode overlay");
     std::ofstream stream(path, std::ios::binary);
@@ -475,7 +508,7 @@ void save_overlay(const std::filesystem::path& path, const CHImage& image, const
             << "  parts " << result.shapes.size() << "  angle ";
     if (result.angle_valid) caption << std::fixed << std::setprecision(2) << result.angle << " deg CW";
     else caption << "unavailable";
-    save_overlay_impl(path, image, result.shapes, caption.str(), false);
+    save_overlay_impl(path, image, result.shapes, caption.str(), false, &result);
 }
 
 std::string csv_name(const std::filesystem::path& path) {
@@ -500,14 +533,52 @@ void write_measurements(std::ofstream& measurements, const std::filesystem::path
         if (!registration) measurements << shape.angle_valid;
         measurements << ',';
         if (!registration) measurements << shape.match_cost;
-        measurements << ',' << (registration ? "register" : "detect") << '\n';
+        measurements << ',' << (registration ? "register" : "detect") << ',';
+        if (!registration && shape.matched) measurements << shape.base_center.x;
+        measurements << ',';
+        if (!registration && shape.matched) measurements << shape.base_center.y;
+        measurements << ',';
+        if (!registration && shape.offset_valid) measurements << shape.offset_x;
+        measurements << ',';
+        if (!registration && shape.offset_valid) measurements << shape.offset_y;
+        measurements << ',';
+        if (!registration) measurements << shape.offset_valid;
+        measurements << '\n';
     }
+}
+
+void write_pose_columns(std::ofstream& summary, const DetectResult* result) {
+    if (!result) {
+        for (int i = 0; i < 12; ++i) summary << ',';
+        summary << '\n';
+        return;
+    }
+    summary << ',';
+    if (result->offset_valid) summary << result->offset_x;
+    summary << ',';
+    if (result->offset_valid) summary << result->offset_y;
+    summary << ',' << result->offset_valid << ',';
+    if (result->reference_valid) summary << result->base_reference_center.x;
+    summary << ',';
+    if (result->reference_valid) summary << result->base_reference_center.y;
+    summary << ',';
+    if (result->reference_valid) summary << result->reference_center.x;
+    summary << ',';
+    if (result->reference_valid) summary << result->reference_center.y;
+    summary << ',' << result->reference_valid << ",\"";
+    for (size_t i = 0; i < result->reference_ids.size(); ++i) {
+        if (i != 0) summary << ' ';
+        summary << result->reference_ids[i];
+    }
+    summary << "\"," << result->using_feature_pair << ','
+        << result->base_image_size.width << ',' << result->base_image_size.height << '\n';
 }
 
 void write_results(std::ofstream& summary, std::ofstream& measurements,
     const std::filesystem::path& path, int status, const RegisterResult& result) {
     summary << csv_name(path) << ',' << status << ',' << result.shapes.size() << ','
-            << result.shapes.size() << ",,,,,,register\n";
+            << result.shapes.size() << ",,,,,,register";
+    write_pose_columns(summary, nullptr);
     write_measurements(measurements, path, result.shapes, true);
 }
 
@@ -517,7 +588,8 @@ void write_results(std::ofstream& summary, std::ofstream& measurements,
             << result.base_shape_count << ',' << result.matched_count << ',' << result.all_matched
             << ',' << result.angle << ',' << result.angle_valid << ",\"";
     for (int id : result.missing_ids) summary << id << ' ';
-    summary << "\",detect\n";
+    summary << "\",detect";
+    write_pose_columns(summary, &result);
     write_measurements(measurements, path, result.shapes, false);
 }
 
@@ -535,7 +607,9 @@ int dev() {
         test_errors_and_formats();
         test_outer_edge();
         test_brightness();
-        std::cout << "All registration, layout/distortion matching, angle, area, brightness, Tenengrad, contrast, outer-edge ellipse, nine-point brightness, and error checks passed.\n";
+        test_calibration();
+        test_pose();
+        std::cout << "All registration, matching, pose/offset, geometry, quality, nine-point brightness, calibration, and error checks passed.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';
@@ -544,17 +618,39 @@ int dev() {
 }
 
 int run_images(const std::vector<std::filesystem::path>& args) {
+    const auto usage = [] {
+        std::cerr << "Usage: Image_Sharpness_Orientations_test --images BASE OUTPUT_DIR [--features ID1 ID2] IMAGE [IMAGE ...]\n";
+    };
     if (args.size() < 4 || args[0] != "--images") {
-        std::cerr << "Usage: Image_Sharpness_Orientations_test --images BASE OUTPUT_DIR IMAGE [IMAGE ...]\n";
+        usage();
         return 2;
+    }
+    Image_Sharpness_Orientations_Detect_Params detect_params;
+    std::vector<std::filesystem::path> images;
+    try {
+        for (size_t i = 3; i < args.size(); ++i) {
+            if (args[i] != "--features") { images.push_back(args[i]); continue; }
+            require(i + 2 < args.size(), "--features requires two registered shape IDs");
+            for (int& id : detect_params.feature_ids) {
+                const auto value = args[++i].u8string();
+                size_t consumed = 0;
+                id = std::stoi(value, &consumed);
+                require(consumed == value.size() && id > 0, "feature IDs must be positive integers");
+            }
+            require(detect_params.feature_ids[0] != detect_params.feature_ids[1], "feature IDs must be different");
+        }
+        require(!images.empty(), "at least one current image is required");
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n'; usage(); return 2;
     }
     try {
         std::filesystem::create_directories(args[2]);
         std::ofstream summary(args[2] / "summary.csv");
         std::ofstream measurements(args[2] / "measurements.csv");
         require(summary.good() && measurements.good(), "cannot create CSV outputs");
-        summary << "image,status,parts,base_parts,matched,all_matched,angle_deg,angle_valid,missing_ids,stage\n";
-        measurements << "image,id,matched,center_x,center_y,area_px2,mean_brightness,sharpness,contrast,orientation_deg,orientation_valid,angle_deg,angle_valid,match_cost,stage\n";
+        summary << "image,status,parts,base_parts,matched,all_matched,angle_deg,angle_valid,missing_ids,stage,offset_x_px,offset_y_px,offset_valid,base_reference_x,base_reference_y,reference_x,reference_y,reference_valid,reference_ids,using_feature_pair,base_image_width,base_image_height\n";
+        measurements << "image,id,matched,center_x,center_y,area_px2,mean_brightness,sharpness,contrast,orientation_deg,orientation_valid,angle_deg,angle_valid,match_cost,stage,base_center_x,base_center_y,offset_x_px,offset_y_px,offset_valid\n";
+        summary << std::setprecision(10);
         measurements << std::setprecision(10);
         Detector detector;
         RegisterResult base_result;
@@ -562,18 +658,27 @@ int run_images(const std::vector<std::filesystem::path>& args) {
         const auto base = read_image(args[1]);
         const int registered = detector.RegisterBase(base, base_result);
         require(registered == ISO_OK, "base registration failed: " + std::to_string(registered));
+        for (int id : detect_params.feature_ids) {
+            require(id == 0 || static_cast<size_t>(id) <= base_result.shapes.size(), "feature ID does not exist in the registered base");
+        }
         write_results(summary, measurements, args[1], registered, base_result);
         save_overlay(args[2] / "base.png", base, base_result);
         std::cout << "Registered " << base_result.shapes.size() << " parts.\n";
         bool success = true;
-        for (size_t i = 3; i < args.size(); ++i) {
-            const auto image = read_image(args[i]);
-            const int status = detector.Detect(image, result);
-            write_results(summary, measurements, args[i], status, result);
-            save_overlay(args[2] / (args[i].stem().u8string() + ".png"), image, result);
-            std::cout << args[i].filename().u8string() << ": status=" << status
+        for (const auto& path : images) {
+            const auto image = read_image(path);
+            const int status = detector.Detect(image, result, detect_params);
+            write_results(summary, measurements, path, status, result);
+            save_overlay(args[2] / (path.stem().u8string() + ".png"), image, result);
+            std::cout << path.filename().u8string() << ": status=" << status
                 << ", parts=" << result.shapes.size() << ", matched=" << result.matched_count
-                << "/" << result.base_shape_count << ", angle=" << result.angle << '\n';
+                << "/" << result.base_shape_count << ", angle=";
+            if (result.angle_valid) std::cout << result.angle;
+            else std::cout << "unavailable";
+            std::cout << ", offset=";
+            if (result.offset_valid) std::cout << '(' << result.offset_x << ", " << result.offset_y << ") px";
+            else std::cout << "unavailable";
+            std::cout << '\n';
             if (status != ISO_OK || !result.all_matched) success = false;
         }
         require(summary.good() && measurements.good(), "cannot write CSV outputs");

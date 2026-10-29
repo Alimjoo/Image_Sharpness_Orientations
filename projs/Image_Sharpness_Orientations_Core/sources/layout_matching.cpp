@@ -176,32 +176,6 @@ void match_shapes(const Image_Sharpness_Orientations_Register_Result& base, cons
     }
     result.all_matched = result.missing_ids.empty() && matches.size() == result.shapes.size();
 
-    // Least-squares rotation of matched centers; translation and uniform scale cancel.
-    if (matches.size() >= 2) {
-        cv::Point2d base_mean(0.0, 0.0), current_mean(0.0, 0.0);
-        for (const auto& pair : matches) {
-            base_mean += cv::Point2d(base.shapes[pair.first].center);
-            current_mean += cv::Point2d(result.shapes[pair.second].center);
-        }
-        base_mean *= 1.0 / static_cast<double>(matches.size());
-        current_mean *= 1.0 / static_cast<double>(matches.size());
-        double dot = 0.0, cross = 0.0;
-        for (const auto& pair : matches) {
-            const auto a = cv::Point2d(base.shapes[pair.first].center) - base_mean;
-            const auto b = cv::Point2d(result.shapes[pair.second].center) - current_mean;
-            dot += a.dot(b);
-            cross += a.x * b.y - a.y * b.x;
-        }
-        result.angle_valid = std::hypot(dot, cross) > 1e-9;
-        if (result.angle_valid) {
-            result.angle = std::atan2(cross, dot) * 180.0 / kPi;
-            if (result.angle >= 180.0) result.angle -= 360.0;
-        }
-    } else if (matches.size() == 1) {
-        const auto& shape = result.shapes[matches[0].second];
-        result.angle_valid = shape.angle_valid;
-        result.angle = shape.angle;
-    }
     std::stable_sort(result.shapes.begin(), result.shapes.end(), [](const auto& a, const auto& b) {
         if (a.matched != b.matched) return a.matched;
         return a.matched && a.id < b.id;

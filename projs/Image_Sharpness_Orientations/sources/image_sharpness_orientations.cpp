@@ -2,6 +2,7 @@
 #include "image_sharpness_orientations_core.h"
 #include "outer_edge.h"
 #include "brightness_measurement.h"
+#include "pose_measurement.h"
 
 #include <exception>
 #include <memory>
@@ -44,18 +45,26 @@ int CH_Image_Sharpness_Orientations::RegisterBase(const CHImage& src,
 
 int CH_Image_Sharpness_Orientations::Detect(const CHImage& src,
     Image_Sharpness_Orientations_Detect_Result& result) const {
+    return Detect(src, result, Image_Sharpness_Orientations_Detect_Params());
+}
+
+int CH_Image_Sharpness_Orientations::Detect(const CHImage& src,
+    Image_Sharpness_Orientations_Detect_Result& result, Image_Sharpness_Orientations_Detect_Params params) const {
     result = {};
     if (!impl_) return ISO_BaseNotRegistered;
+    if (!iso_detail::valid_detect_params(params, impl_->base)) return ISO_InvalidParameter;
     try {
         iso_detail::Product_Frame frame;
         const int status = iso_detail::extract_shapes(src, impl_->params, result.image_size, result.shapes, frame);
         if (status == ISO_NoShapes) {
             result.base_shape_count = static_cast<int>(impl_->base.shapes.size());
             for (const auto& shape : impl_->base.shapes) result.missing_ids.push_back(shape.id);
+            iso_detail::measure_pose(impl_->base, params, result);
             return status;
         }
         if (status != ISO_OK) return status;
         iso_detail::match_shapes(impl_->base, impl_->frame, frame, result);
+        iso_detail::measure_pose(impl_->base, params, result);
         return ISO_OK;
     } catch (const std::exception&) {
         result = {};
