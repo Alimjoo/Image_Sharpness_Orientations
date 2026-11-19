@@ -640,7 +640,15 @@ For the existing internal-mark registration/matching test:
 build/Release/Image_Sharpness_Orientations_test.exe --images BASE_IMAGE OUTPUT_DIR [--features ID1 ID2] IMAGE [IMAGE ...]
 ```
 
-The runner uses the default dark-area settings. It writes `base.png`, a numbered contour overlay for each current image,
+The runner defaults to dark marks, Otsu threshold (`-1`), and minimum area `100`.
+Use `--threshold N` and `--min-area N` to reproduce the application's dark-mark
+registration settings; these same settings are retained for each `Detect()` call.
+For example, `--threshold 50 --min-area 66` uses a fixed threshold of 50,
+not automatic thresholding. On a dim gray projection this can classify the
+surface texture as dark marks; use `--threshold -1` to select Otsu instead.
+After changing these parameters in an application, register the base again.
+
+It writes `base.png`, a numbered contour overlay for each current image,
 `summary.csv`, and `measurements.csv`. Both CSV files include a `stage` column
 (`register` or `detect`); detection-only matching fields are blank for registration.
 Unmatched contours are red and labeled `unmatched`.

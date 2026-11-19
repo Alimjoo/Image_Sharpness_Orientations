@@ -619,16 +619,36 @@ int dev() {
 
 int run_images(const std::vector<std::filesystem::path>& args) {
     const auto usage = [] {
-        std::cerr << "Usage: Image_Sharpness_Orientations_test --images BASE OUTPUT_DIR [--features ID1 ID2] IMAGE [IMAGE ...]\n";
+        std::cerr << "Usage: Image_Sharpness_Orientations_test --images BASE OUTPUT_DIR IMAGE [IMAGE ...]\n"
+            "  [--features ID1 ID2] [--threshold N] [--min-area N]\n";
     };
     if (args.size() < 4 || args[0] != "--images") {
         usage();
         return 2;
     }
     Image_Sharpness_Orientations_Detect_Params detect_params;
+    Image_Sharpness_Orientations_Params register_params;
     std::vector<std::filesystem::path> images;
     try {
         for (size_t i = 3; i < args.size(); ++i) {
+            const auto option = args[i].u8string();
+            if (option == "--threshold" || option == "--min-area") {
+                require(i + 1 < args.size(), "missing value for " + option);
+                const auto value = args[++i].u8string();
+                size_t consumed = 0;
+                if (option == "--threshold") {
+                    register_params.threshold = std::stoi(value, &consumed);
+                    require(register_params.threshold >= -1 && register_params.threshold <= 255,
+                        "--threshold must be -1 (Otsu) or 0..255");
+                } else {
+                    register_params.min_area = std::stod(value, &consumed);
+                    require(std::isfinite(register_params.min_area) && register_params.min_area > 0.0,
+                        "--min-area must be finite and positive");
+                }
+                require(consumed == value.size(), "invalid numeric value for " + option);
+                continue;
+            }
+            require(option.rfind("--", 0) != 0 || option == "--features", "unknown option: " + option);
             if (args[i] != "--features") { images.push_back(args[i]); continue; }
             require(i + 2 < args.size(), "--features requires two registered shape IDs");
             for (int& id : detect_params.feature_ids) {
@@ -656,7 +676,7 @@ int run_images(const std::vector<std::filesystem::path>& args) {
         RegisterResult base_result;
         DetectResult result;
         const auto base = read_image(args[1]);
-        const int registered = detector.RegisterBase(base, base_result);
+        const int registered = detector.RegisterBase(base, base_result, register_params);
         require(registered == ISO_OK, "base registration failed: " + std::to_string(registered));
         for (int id : detect_params.feature_ids) {
             require(id == 0 || static_cast<size_t>(id) <= base_result.shapes.size(), "feature ID does not exist in the registered base");
